@@ -13,7 +13,7 @@
 
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { Browser, BrowserContext, Page } from 'playwright-core'
+import type { Browser, BrowserContext, Frame, Page } from 'playwright-core'
 import { chromium } from 'playwright-core'
 import { withCancellation, type CancellationScope } from './cancellation.js'
 
@@ -330,11 +330,23 @@ export class Engine {
       // what initiated the navigation: redirects, link clicks, history moves.
       await context.route('**/*', (route) => {
         const request = route.request()
-        if (request.isNavigationRequest() && request.frame().parentFrame() === null) {
+        // Playwright throws when the request is issued before its frame exists
+        // (early navigations, interrupted redirects, downloads). This callback has no
+        // caller above it: an escaped throw becomes an unhandled rejection, which the
+        // host elevates to a fatal load failure and the whole process exits. A request
+        // without a resolvable frame cannot be a judgeable main-frame navigation, so
+        // let it through instead of taking the host down with it.
+        let frame: Frame
+        try {
+          frame = request.frame()
+        } catch {
+          return route.continue()
+        }
+        if (request.isNavigationRequest() && frame.parentFrame() === null) {
           // A tab authorized under a prompt-free session carries its exemption
           // for its own lifetime only; it never becomes a standing grant other
           // sessions inherit.
-          const owner = this.tracked.get(request.frame().page())
+          const owner = this.tracked.get(frame.page())
           if (owner?.unfenced) return route.continue()
           let url: URL
           try {
